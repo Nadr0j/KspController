@@ -1,103 +1,99 @@
 #include <KerbalSimpit.h>
 #include "Arduino.h"
 
-void triggerSTB(bool newState)
+struct VecButtonSystem
 {
+  uint8_t buttonPin;
+  uint8_t ledPin;
+  bool lastButtonState;
+  bool systemState;
+  void (*onchange)(int i, bool newState, VecButtonSystem vecButtonSystems[]);
+};
+
+struct StageSystem
+{
+  uint8_t buttonPin;
+  uint8_t togglePin;
+  uint8_t ledPin;
+  bool lastButtonState;
+};
+
+void stbOnChange(int i, bool newState, VecButtonSystem vecButtonSystems[])
+{
+  VecButtonSystem &system = vecButtonSystems[i];
+  system.systemState = newState;
+  digitalWrite(system.ledPin, newState ? HIGH : LOW);
+
   Serial.print("STB: ");
   Serial.println(newState ? "ON" : "OFF");
 }
 
-void triggerTRG(bool newState)
+void trgOnChange(int i, bool newState, VecButtonSystem vecButtonSystems[])
 {
   Serial.print("TRG: ");
   Serial.println(newState ? "ON" : "OFF");
 }
 
-void triggerPRO(bool newState)
+void proOnChange(int i, bool newState, VecButtonSystem vecButtonSystems[])
 {
   Serial.print("PRO: ");
   Serial.println(newState ? "ON" : "OFF");
 }
 
-void triggerRTO(bool newState)
+void rtoOnChange(int i, bool newState, VecButtonSystem vecButtonSystems[])
 {
   Serial.print("RTO: ");
   Serial.println(newState ? "ON" : "OFF");
 }
 
-struct ButtonLedPair
+/*
+SYSTEMS
+*/
+
+VecButtonSystem vecButtonSystems[] = {
+    {2, 3, false, false, stbOnChange}, // STB
+    {4, 5, false, false, trgOnChange}, // TRG
+    {6, 7, false, false, proOnChange}, // PRO
+    {8, 9, false, false, rtoOnChange}, // RTO
+};
+
+StageSystem stageSystem = {
+    10,   // button pin
+    11,   // toggle pin
+    12,   // led pin
+    false // button state starts false
+};
+
+void flipButtonState(int buttonIdx, bool newState)
 {
-  uint8_t buttonPin;
-  uint8_t ledPin;
-  void (*onchange)(bool newState);
-};
-
-struct ToggleSwitch
-{
-  uint8_t togglePin;
-};
-
-struct Button
-{
-  uint8_t buttonPin;
-};
-
-struct Potentiometer
-{
-  uint8_t potPin;
-};
-
-ButtonLedPair vecButtonLedPairs[] = {
-    {2, 3, triggerSTB}, // STB
-    {4, 5, triggerTRG}, // TRG
-    {6, 7, triggerPRO}, // PRO
-    {8, 9, triggerRTO}, // RTO
-};
-
-ToggleSwitch toggleSwitches[] = {
-    {10}, // SAS
-    {11}, // RCS
-    {12}, // STAGE
-};
-
-Button buttons[] = {
-    {13}, // STAGE BUTTON
-};
-
-Potentiometer pots[] = {
-    {A0}, // THROTTLE
-    {A1}, // ROLL
-    {A2}, // PITCH
-    {A3}, // YAW
-};
-
-const int numVecButtonLedPairs = sizeof(vecButtonLedPairs) / sizeof(vecButtonLedPairs[0]);
-bool vecButtonSystemStates[numVecButtonLedPairs] = {false};
-bool vecButtonLastStates[numVecButtonLedPairs] = {true};
-
-// const int numToggleSwitches = sizeof(toggleSwitches) / sizeof(toggleSwitches[0]);
-// bool toggleSwitchStates[numToggleSwitches];
-// bool toggleSwitchLastStates[numToggleSwitches];
-
-// void initializeToggleButtons()
-// {
-//   for (int i = 0; i < numToggleSwitches; i++)
-//   {
-//     pinMode(toggleSwitches[i].togglePin, INPUT_PULLUP);
-//     bool toggleIsOn = digitalRead(toggleSwitches[i].togglePin) == LOW; // due to input pullup pressed == LOW
-//     toggleSwitchStates[i] = toggleIsOn;
-//     toggleSwitchLastStates[i] = toggleIsOn;
-//   }
-// }
+  for (int i = 0; i < sizeof(vecButtonSystems) / sizeof(vecButtonSystems[0]); i++)
+  {
+    if (i == buttonIdx)
+    {
+      bool currentSystemState = vecButtonSystems[i].systemState;
+      vecButtonSystems[i].onchange(i, !currentSystemState, vecButtonSystems);
+    }
+    else
+    {
+      vecButtonSystems[i].onchange(i, false, vecButtonSystems);
+    }
+  }
+}
 
 void initializeVecButtons()
 {
-  for (int i = 0; i < numVecButtonLedPairs; i++)
+  for (int i = 0; i < sizeof(vecButtonSystems) / sizeof(vecButtonSystems[0]); i++)
   {
-    pinMode(vecButtonLedPairs[i].buttonPin, INPUT_PULLUP);
-    pinMode(vecButtonLedPairs[i].ledPin, OUTPUT);
-    digitalWrite(vecButtonLedPairs[i].ledPin, LOW);
+    pinMode(vecButtonSystems[i].buttonPin, INPUT_PULLUP);
+    pinMode(vecButtonSystems[i].ledPin, OUTPUT);
+    digitalWrite(vecButtonSystems[i].ledPin, LOW);
   }
+}
+
+void initializeStageSystem() {
+  pinMode(stageSystem.buttonPin, INPUT_PULLUP);
+  pinMode(stageSystem.ledPin, OUTPUT);
+  digitalWrite(stageSystem.ledPin, LOW);
 }
 
 void setup()
@@ -107,31 +103,33 @@ void setup()
 
   // Setup vec buttons and leds
   initializeVecButtons();
-  // initializeToggleButtons();
 }
 
-void processVecButton(int i, ButtonLedPair &pair)
+const uint8_t N = sizeof(vecButtonSystems) / sizeof(vecButtonSystems[0]);
+const uint32_t DEBOUNCE_MS = 100;
+static uint32_t lastEdge[N];
+
+void processVecButtonOnLoop()
 {
-  bool buttonPressed = digitalRead(pair.buttonPin) == LOW; // due to input pullup pressed == LOW
-  bool wasPreviouslyPressed = vecButtonLastStates[i] == LOW;
-
-  // detect rising edge
-  if (buttonPressed && !wasPreviouslyPressed)
+  for (int i = 0; i < sizeof(vecButtonSystems) / sizeof(vecButtonSystems[0]); i++)
   {
-    vecButtonSystemStates[i] = !vecButtonSystemStates[i]; // toggle LED state due to rising edge detection
-    digitalWrite(pair.ledPin, vecButtonSystemStates[i] ? HIGH : LOW);
-  };
+    // true if button on else false
+    bool lastButtonState = vecButtonSystems[i].lastButtonState;
+    bool currentButtonState = digitalRead(vecButtonSystems[i].buttonPin) == LOW;
 
-  pair.onchange(vecButtonSystemStates[i]);             // Call the onchange function with the new state
-  vecButtonLastStates[i] = buttonPressed ? LOW : HIGH; // Update last known button state
+    if (!lastButtonState && currentButtonState && (millis() - lastEdge[i] > DEBOUNCE_MS))
+    {
+      // rising edge case
+      lastEdge[i] = millis();
+      flipButtonState(i, currentButtonState);
+    }
+
+    vecButtonSystems[i].lastButtonState = currentButtonState;
+  }
 }
 
 void loop()
 {
   // Handle VEC buttons
-  for (int i = 0; i < numVecButtonLedPairs; i++)
-  {
-    ButtonLedPair &pair = vecButtonLedPairs[i];
-    processVecButton(i, pair);
-  }
+  processVecButtonOnLoop();
 }
